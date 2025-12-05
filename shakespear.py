@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from torch.utils.data import Dataset, DataLoader
 
 residual_pdrop = 0.1  # Attention is All You Need Paper
-attention_pdrop = 0.1
+
 block_size = 128
 batch_size = 128
 nb_layers = 12
@@ -79,20 +79,27 @@ val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, nb_embd, nb_heads, block_size, attention_pdrop, residual_pdrop):
+    def __init__(self, nb_embd, nb_heads, block_size, residual_pdrop):
         super().__init__()
         self.nb_embd = nb_embd
         self.nb_heads = nb_heads
-        self.attendion_pdrop = attention_pdrop
+
         self.residual_pdrop = residual_pdrop
         self.block_size = block_size
 
         # nb_embd % nb_heads == 0
         self.attention = nn.Linear(
-            nb_embd, 3 * nb_embd
+            self.nb_embd, 3 * self.nb_embd
         )  # I get for each token in input a vector of size 3*nb_embd
         # A big Weight matrix of shape [3*nb_embd,nb_embd] that can be considered
         # the concatenation (by last dimension) of Wq,Wk,Wv
+
+        self.out_proj = nn.Linear(
+            self.nb_embd, self.nb_embd
+        )  # the output projection W0 according to paper
+
+        # Apply dropout to the output according to "Attention is all you need" before normalization and residual connection
+        self.residual_dropout = nn.Dropout(self.residual_pdrop)
 
         # I create the mask for causal self attention
         # with a lower triangular matrix so that no information from future flows to the past
@@ -111,7 +118,7 @@ class CausalSelfAttention(nn.Module):
         qkv = self.attention(x)
         q, k, v = qkv.chunk(
             3, dim=-1
-        )  # I split the big matrix, into 3 separate Q,K,V matrices of shape [N,C]
+        )  # I split the big matrix, into 3 separate Q,K,V matrices of shape [B,N,C]
         # The q,k,v matrices are calculated for all heads in batch at once , shape [B,N,C]
         q = q.view(B, N, h, C // h).transpose(
             1, 2
@@ -124,6 +131,16 @@ class CausalSelfAttention(nn.Module):
         # I apply the mask for causal self-attention
         # no information from the future flows to the past
         # I use a lower triangular matrix to do this
-        mask = self.mask[:, :, N, N]
-        att.masked_fill(mask == 0, float("-inf"))
+        mask = self.mask[:, :, :N, :N]
+        att = att.masked_fill(mask == 0, float("-inf"))
         att = F.softmax(att, dim=-1)
+        out = att @ v  # (B,heads,N,N) x (B,heads,N, head_dim) --> (B,heads,N,head_dim)
+        out = (
+            out.transpose(1, 2).contiguous().view(B, T, C)
+        )  # merge the last 2 dimensions (heads,head_dim) into one (C = heads * head_dim) to perform the projection W0
+
+        # perform the final projection to the concatenation of all heads
+        out = self.out_proj(out)
+        # perform a dropout to the output of this sub-layer according to the paper
+        out = self.residual_dropout(out)
+        return out
