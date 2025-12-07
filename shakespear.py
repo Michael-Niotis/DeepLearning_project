@@ -4,6 +4,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.utils.data import Dataset, DataLoader
 
+
 residual_pdrop = 0.1  # Attention is All You Need Paper
 embd_pdrop = 0.1
 block_size = 128
@@ -198,7 +199,7 @@ class FullModel(nn.Module):
             self.block_size, self.nb_embd
         )  # I tokenize each position in the block_size (sequence) into a vector of dimension nb_embd
         self.dropout = nn.Dropout(
-            self.embd_pdrop_pdrop
+            self.embd_pdrop
         )  # dropout to be applied in the input (sum of tok_emb and pos_emb)
         self.blocks = nn.ModuleList(
             [
@@ -213,11 +214,11 @@ class FullModel(nn.Module):
     def forward(self, idx):
         B, N = idx.size()  # Batches of sequences of length N
         assert N <= self.block_size
-        pos = torch.arange(0, N).unsqueeze(
+        pos = torch.arange(0, N, device=idx.device).unsqueeze(
             0
         )  # transform into a row vector(tensor) of shape (1,N)
         tok_emb = self.wte(idx)  # create the token embeddings, shape of B,N,nb_embd
-        pos_emb = self.wpe(pos)  # positional embeddings, shape of 1,N,nb_embd
+        pos_emb = self.pte(pos)  # positional embeddings, shape of 1,N,nb_embd
         x = self.dropout(tok_emb + pos_emb)
         for block in self.blocks:
             x = block(x)
@@ -247,53 +248,89 @@ class FullModel(nn.Module):
             )  # [B,1] for each batch we select the element with the greatest probability
 
             idx = torch.cat(
-                (idx_cond, next_idx), dim=1
+                (idx, next_idx), dim=1
             )  # append the index we got to the sequence
         return idx
 
 
-text = open("input.txt", "r").read()
-n = int(0.9 * len(text))
-train_text = text[0:n]
-val_text = text[n:]
+def main():
 
-train_ds = CharDataset(train_text, block_size)
-val_ds = CharDataset(val_text, block_size)
+    def tokenize(text):
 
-train_loader = DataLoader(
-    train_ds, batch_size=batch_size, shuffle=True
-)  # I get batches of (B,N) : B=batch_size examples(sequences) of N = block_size each
-val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+        stoi = train_ds.stoi
+        tokens = [stoi[s] for s in text]
+        return torch.tensor(tokens, dtype=torch.long)
 
-model = FullModel(
-    train_ds.get_vocab_size,
-    nb_embd,
-    train_ds.get_block_size,
-    nb_layers,
-    nb_heads,
-    embd_pdrop,
-    residual_pdrop,
-)
-optimizer = torch.optim.Adam(model.parameters(), lr)
+    def tokens_to_string(tok):
+        # tok will be a tensor of shape [B,N + max_new_tokens]
+        # I will use as a seed only one batch so the output of the generation will be [1, N + max_new_tokens]
+        itos = train_ds.itos
+        string = [itos[i.item()] for i in tok[0]]
+        return "".join(string)
 
-step = 0
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-while step < train_steps:
-    for x, y in train_loader:
-        logits = model(x)
-        B, N, C = (
-            logits.size()
-        )  # Batch_size, position in sequence, logit scores for next position
-        loss = F.cross_entropy(
-            logits.view(B * N, C), y.view(B * N)
-        )  # cross entropy expects an input of (Batch,Channels) and a target of of indices in the range of [0,Channels-1]
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+    from pathlib import Path
 
-        step += 1
-        if step % 200 == 0:
-            print(step, loss.item())
+    here = Path(__file__).resolve().parent
+    text_path = here / "input.txt"
+    text = text_path.read_text(encoding="utf-8")
 
-        if step >= train_steps:
-            break
+    n = int(0.9 * len(text))
+    train_text = text[0:n]
+    val_text = text[n:]
+
+    train_ds = CharDataset(train_text, block_size)
+    val_ds = CharDataset(val_text, block_size)
+
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=2
+    )  # I get batches of (B,N) : B=batch_size examples(sequences) of N = block_size each
+    # val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+    model = FullModel(
+        train_ds.get_vocab_size(),
+        nb_embd,
+        train_ds.get_block_size(),
+        nb_layers,
+        nb_heads,
+        embd_pdrop,
+        residual_pdrop,
+    ).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr)
+
+    step = 0
+    model.train()
+    while step < train_steps:
+        for x, y in train_loader:
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+            logits = model(x)
+            B, N, C = (
+                logits.size()
+            )  # Batch_size, position in sequence, logit scores for next position
+            loss = F.cross_entropy(
+                logits.view(B * N, C), y.view(B * N)
+            )  # cross entropy expects an input of (Batch,Channels) and a target of of indices in the range of [0,Channels-1]
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            step += 1
+            if step % 200 == 0:
+                print(step, loss.item())
+
+            if step >= train_steps:
+                break
+    # Generation of text
+    model.eval()
+    with torch.no_grad():
+        context = "O God, O God!"
+        tokenized_context = tokenize(context).unsqueeze(0).to(device)
+        y = model.generate(tokenized_context, 2000)
+        completion = tokens_to_string(y)
+        print(completion)
+
+
+if __name__ == "__main__":
+    main()
