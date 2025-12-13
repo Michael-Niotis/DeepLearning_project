@@ -254,135 +254,38 @@ class FullModel(nn.Module):
 
 def main():
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # load checkpoint
+    ckpt = torch.load("ckpt.pt", map_location=device)
+    stoi = ckpt["stoi"]
+    itos = ckpt["itos"]
+    vocab_size = ckpt["vocab_size"]
+    block_size = ckpt["block_size"]
+
+    model = FullModel(
+        vocab_size=vocab_size,
+        nb_embd=nb_embd,
+        block_size=block_size,
+        nb_layers=nb_layers,
+        nb_heads=nb_heads,
+        embd_pdrop=embd_pdrop,
+        residual_pdrop=residual_pdrop,
+    ).to(device)
+
+    model.load_state_dict(ckpt["model_state"])
+
     def tokenize(text):
 
-        stoi = train_ds.stoi
         tokens = [stoi[s] for s in text]
         return torch.tensor(tokens, dtype=torch.long)
 
     def tokens_to_string(tok):
-        # tok will be a tensor of shape [B,N + max_new_tokens] or generally [B,nb_tokens]
-        # I will use as a seed only one sequence so the output of the generation will be [1, N + max_new_tokens]
-        itos = train_ds.itos
-        string = [
-            itos[i.item()] for i in tok[0]
-        ]  # For seeds that are just one single sequence.
+        # tok will be a tensor of shape [B,N + max_new_tokens]
+        # I will use as a seed only one batch so the output of the generation will be [1, N + max_new_tokens]
+
+        string = [itos[i.item()] for i in tok[0]]
         return "".join(string)
 
-    @torch.no_grad()
-    def val_loss_func(model, loader, device, max_batches=20):
-        model.eval()
-        losses = []
-        for i, (x, y) in enumerate(loader):
-            x = x.to(device, non_blocking=True)
-            y = y.to(device, non_blocking=True)
-
-            logits = model(x)  # shape [B,N,vocab_size]
-            B, N, C = logits.size()
-            loss = F.cross_entropy(logits.view(B * N, C), y.view(B * N))
-            losses.append(loss.item())
-
-            if i + 1 >= max_batches:
-                break
-        model.train()
-        return sum(losses) / len(losses)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    text = open("input.txt", "r").read()
-
-    n = int(0.9 * len(text))
-    train_text = text[0:n]
-    val_text = text[n:]
-
-    train_ds = CharDataset(train_text, block_size)
-    val_ds = CharDataset(val_text, block_size)
-
-    val_ds.stoi = train_ds.stoi
-    val_ds.itos = train_ds.itos
-    val_ds.vocab_size = train_ds.vocab_size
-
-    train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=2
-    )  # I get batches of (B,N) : B=batch_size examples(sequences) of N = block_size each
-
-    val_loader = DataLoader(
-        val_ds, batch_size=batch_size, shuffle=False, pin_memory=True, num_workers=2
-    )
-    model = FullModel(
-        train_ds.get_vocab_size(),
-        nb_embd,
-        train_ds.get_block_size(),
-        nb_layers,
-        nb_heads,
-        embd_pdrop,
-        residual_pdrop,
-    ).to(device)
-
-    optimizer = torch.optim.Adam(model.parameters(), lr)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1000, gamma=0.7)
-
-    step = 0
-    train_losses = []
-    val_losses = []
-    steps = []
-    interval = 200
-    model.train()
-    while step < train_steps:
-        for x, y in train_loader:
-            x = x.to(device, non_blocking=True)
-            y = y.to(device, non_blocking=True)
-            logits = model(x)
-            B, N, C = (
-                logits.size()
-            )  # Batch_size, position in sequence, logit scores for next position
-            loss = F.cross_entropy(
-                logits.view(B * N, C), y.view(B * N)
-            )  # cross entropy expects an input of (Batch,Channels) and a target of of indices in the range of [0,Channels-1]
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            scheduler.step()
-
-            step += 1
-            if step % interval == 0:
-                train_loss = loss.item()
-                val_loss = val_loss_func(model, val_loader, device, max_batches=20)
-
-                train_losses.append(train_loss)
-                val_losses.append(val_loss)
-                steps.append(step)
-
-                torch.save(
-                    {
-                        "model_state": model.state_dict(),
-                        "optimizer_state": optimizer.state_dict(),
-                        "step": step,
-                        "stoi": train_ds.stoi,
-                        "itos": train_ds.itos,
-                        "vocab_size": train_ds.get_vocab_size(),
-                        "block_size": train_ds.get_block_size(),
-                        "scheduler_state": scheduler.state_dict(),
-                    },
-                    "ckpt.pt",
-                )
-                print(
-                    f"step: {step}| training loss: {train_loss:.4f} | Validation loss: {val_loss:.4f} | Saved checkpoint"
-                )
-
-            if step >= train_steps:
-                break
-    plt.figure()
-    plt.plot(steps, train_losses, label="Training loss")
-    plt.plot(steps, val_losses, label="Validation loss")
-    plt.title("Training vs Validation loss")
-    plt.xlabel("step")
-    plt.ylabel("Loss")
-    plt.legend()
-    plt.show()
-
-    # Generation of text
     model.eval()
     with torch.no_grad():
         context = "O God, O God!"
