@@ -12,7 +12,7 @@ A GPT-style **decoder-only Transformer** trained at the **character level** on t
 
 ## Repository contents
 
-- `shakespear.py` — end-to-end training + validation + checkpointing + loss plot + sample generation
+- `shakespeare.py` — end-to-end training + validation + checkpointing + loss plot + sample generation
 - `generate.py` — loads `ckpt.pt` and generates text
 - `input.txt` — Shakespeare dataset (plain text)
 - `Losses.png` — training vs validation loss plot
@@ -27,7 +27,7 @@ pip install torch matplotlib
 
 ### Train
 ```bash
-python shakespear.py
+python shakespeare.py
 ```
 This will:
 - build the character vocabulary from `input.txt`
