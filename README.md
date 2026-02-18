@@ -88,7 +88,7 @@ The improved setup focused on training stability and generation quality and dive
 ## Experiment iteration (exploratory baseline → current configuration)
 
 I first ran an **exploratory baseline** and logged train/validation losses, then updated the configuration to improve training stability and generation quality.  
-Only the **current configuration** is encoded in the repository scripts (`shakespear.py`, `generate.py`). The baseline run was exploratory.
+Only the **current configuration** is encoded in the repository scripts (`shakespeare.py`, `generate.py`). The baseline run was exploratory.
 
 | Setup | Decoding | Key settings | Train loss (≈) | Val loss (≈) |
 |------|----------|--------------|----------------|--------------|
